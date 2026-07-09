@@ -1,0 +1,27 @@
+# Local configuration and secrets
+config/gigamoney.config.json
+.env
+.env.*
+*.secret.*
+
+# Runtime output and scratch files
+work/
+logs/
+*.log
+*.tmp
+*.bak
+
+# PowerShell artifacts
+*.ps1xml
+*.pssc
+*.psrc
+PowerShell_transcript*.txt
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini

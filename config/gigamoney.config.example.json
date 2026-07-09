@@ -1,0 +1,10 @@
+{
+  "gigamoney": {
+    "tradePassword": ""
+  },
+  "kafka": {
+    "bootstrapServers": "",
+    "commandTopic": "",
+    "consumerGroupId": "gigamoney-order-runner"
+  }
+}
