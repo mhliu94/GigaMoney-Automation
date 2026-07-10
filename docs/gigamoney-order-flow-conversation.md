@@ -3,7 +3,7 @@
 Created: 2026-07-09, America/New_York
 
 This note captures the projectless Codex conversation that produced the
-Gigamoney order scripts and local config file.
+Gigamoney order scripts, holdings query script, and local config file.
 
 ## Initial Timing Checks
 
@@ -94,6 +94,25 @@ The script uses:
   execution/done-quantity fields.
 - Temporary screenshots in `work/`, removed in `finally`.
 
+The holdings query script uses the same landing-page OCR and trade-password
+handling, then taps the recorded `Portfolio` tab coordinate immediately after
+landing OCR succeeds. It seeks the top only until the top card/Cash tile is
+visible, opens `Cash` immediately, reads cash balances, presses Back to return
+to `Portfolio`, and scrolls directly to the bottom of the positions table
+without re-checking the top. It captures OCR at the bottom and emits a single
+JSON object on stdout. The initial top seek avoids the old refresh loop by
+checking for the top card before every short downward swipe and stopping as soon
+as Cash is visible. Portfolio and Cash password prompts are detected with
+UIAutomator (`et_pwd` or `Enter Trade Password`) while simultaneously waiting
+for the destination page marker, avoiding a separate screenshot/OCR password
+probe and fixed settle sleep. The top Portfolio UI dump is reused to tap Cash,
+so there is no extra UI dump between detecting the top card and opening Cash.
+After Cash, the script presses Back, waits briefly, reuses the pre-Cash
+Portfolio dump for the first positions scan pass, and starts scrolling
+immediately if the bottom row was not already visible. The scan stops as soon as
+the known bottom fund/Cash Plus row is visible instead of requiring an extra
+unchanged-scroll pass. Status logs go to stderr so stdout stays machine-readable.
+
 The default config shape is:
 
 ```json
@@ -119,6 +138,14 @@ Important Gigamoney UI IDs observed:
 | Stock detail title | `lb.whale.hkwinner.android:id/tv_stock_name_code` |
 | Buy button | `lb.whale.hkwinner.android:id/tv_buy` |
 | Sell button | `lb.whale.hkwinner.android:id/tv_sell` |
+| Portfolio tab text | `lb.whale.hkwinner.android:id/main_tab_tv` |
+| Portfolio card | `lb.whale.hkwinner.android:id/card_portfolio_view` |
+| Portfolio cash tile | `lb.whale.hkwinner.android:id/ll_cash` |
+| Portfolio position row | `lb.whale.hkwinner.android:id/wealth_stock_hold_item_view` |
+| Portfolio market header | `lb.whale.hkwinner.android:id/wealth_stock_hold_header` |
+| Portfolio fund row | `lb.whale.hkwinner.android:id/wealth_ut_item_view` |
+| Cash page title | `lb.whale.hkwinner.android:id/title_bar_title` |
+| Cash balance row | `lb.whale.hkwinner.android:id/rootContainer` |
 | Price container | `lb.whale.hkwinner.android:id/deal_quick_price` |
 | Qty container | `lb.whale.hkwinner.android:id/deal_quick_qty` |
 | Price/Qty input | `lb.whale.hkwinner.android:id/et_input` |
@@ -163,6 +190,7 @@ Project copy:
 ```powershell
 C:\Users\mhliu\Documents\Projects\Giga-Money-Automation\scripts\Send-GigamoneyLimitOrder.ps1
 C:\Users\mhliu\Documents\Projects\Giga-Money-Automation\scripts\Send-GigamoneyMarketOrder.ps1
+C:\Users\mhliu\Documents\Projects\Giga-Money-Automation\scripts\Get-GigamoneyHoldings.ps1
 C:\Users\mhliu\Documents\Projects\Giga-Money-Automation\config\gigamoney.config.json
 C:\Users\mhliu\Documents\Projects\Giga-Money-Automation\config\gigamoney.config.example.json
 ```
@@ -221,6 +249,12 @@ Market live order submission:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\mhliu\Documents\Projects\Giga-Money-Automation\scripts\Send-GigamoneyMarketOrder.ps1" -Symbol BILI -Quantity 0.0001
+```
+
+Holdings and cash query:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\mhliu\Documents\Projects\Giga-Money-Automation\scripts\Get-GigamoneyHoldings.ps1"
 ```
 
 ## Verification Performed
