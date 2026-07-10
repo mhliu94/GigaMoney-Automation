@@ -1,10 +1,23 @@
 {
   "gigamoney": {
-    "tradePassword": ""
+    "tradePassword": "",
+    "accountId": "",
+    "accountNumId": null,
+    "tradingEnabledDefault": true,
+    "foregroundLaunchTimeoutSeconds": 15
   },
   "kafka": {
-    "bootstrapServers": "",
-    "commandTopic": "",
-    "consumerGroupId": "gigamoney-order-runner"
+    "bootstrapServers": "45.32.121.19:9092",
+    "commandTopic": "trading-commands",
+    "accountDetailsTopic": "account-details",
+    "consumerGroupId": "gigamoney-order-runner",
+    "autoOffsetReset": "latest",
+    "pollTimeoutSeconds": 1,
+    "maxPollIntervalMilliseconds": 900000,
+    "maxCommandAgeSeconds": 300,
+    "commitFailedCommands": true,
+    "holdingsIntervalSeconds": 120,
+    "clientVersion": "2.15.0",
+    "clientPath": ""
   }
 }

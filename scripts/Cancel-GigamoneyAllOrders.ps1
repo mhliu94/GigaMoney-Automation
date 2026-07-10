@@ -31,6 +31,8 @@ $script:WorkDir = Join-Path $script:ProjectRoot 'work'
 $script:PackageName = 'lb.whale.hkwinner.android'
 $script:OcrEngine = $null
 $script:AsTaskGeneric = $null
+
+. (Join-Path $script:ScriptRoot 'Gigamoney-AppForeground.ps1')
 $script:PortfolioBottomTabCenter = [pscustomobject]@{ X = 756; Y = 2332 }
 $script:PortfolioTopTabCenter = [pscustomobject]@{ X = 124; Y = 268 }
 $script:OrdersTopTabCenter = [pscustomobject]@{ X = 368; Y = 268 }
@@ -391,6 +393,8 @@ function Test-HomeOcrText([string]$Text) {
 }
 
 function Ensure-Home {
+    Ensure-GigamoneyAppForeground -AdbPath $script:Adb -PackageName $script:PackageName
+
     for ($attempt = 0; $attempt -le $MaxHomeBacks; $attempt++) {
         $ocr = Get-ScreenshotOcr
         if (Test-HomeOcrText $ocr.Text) {

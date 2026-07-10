@@ -47,6 +47,8 @@ $script:WorkDir = Join-Path $script:ProjectRoot 'work'
 $script:PackageName = 'lb.whale.hkwinner.android'
 $script:OcrEngine = $null
 $script:AsTaskGeneric = $null
+
+. (Join-Path $script:ScriptRoot 'Gigamoney-AppForeground.ps1')
 $script:FieldClearKeyEvents = (@('KEYCODE_MOVE_END') + (1..10 | ForEach-Object { 'KEYCODE_DEL' })) -join ' '
 $script:DetailOpenDelayMs = 1000
 $script:TicketOpenDelayMs = 1500
@@ -405,6 +407,8 @@ function Wait-ForUiNode([scriptblock]$FindNode, [int]$TimeoutMs = 6000, [int]$Po
 }
 
 function Ensure-Home {
+    Ensure-GigamoneyAppForeground -AdbPath $script:Adb -PackageName $script:PackageName
+
     for ($attempt = 0; $attempt -le $MaxHomeBacks; $attempt++) {
         $ocr = Get-ScreenshotOcr
         if (Test-HomeOcrText $ocr.Text) {

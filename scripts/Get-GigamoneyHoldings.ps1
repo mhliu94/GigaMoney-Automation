@@ -32,6 +32,8 @@ $script:AsTaskGeneric = $null
 $script:PortfolioTabCenter = [pscustomobject]@{ X = 756; Y = 2332 }
 $script:CashTileCenter = [pscustomobject]@{ X = 945; Y = 462 }
 
+. (Join-Path $script:ScriptRoot 'Gigamoney-AppForeground.ps1')
+
 New-Item -ItemType Directory -Force -Path $script:WorkDir | Out-Null
 
 function Write-Step([string]$Message) {
@@ -133,34 +135,147 @@ function Save-AdbScreenshot([string]$Path) {
     }
 }
 
-function Get-ScreenshotOcr {
+function Invoke-ImageOcr([string]$Path) {
     Initialize-Ocr
+
+    $file = Wait-WinRtOperation ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Path)) ([Windows.Storage.StorageFile])
+    $stream = Wait-WinRtOperation ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+    try {
+        $decoder = Wait-WinRtOperation ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+        $bitmap = Wait-WinRtOperation ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+        if ($bitmap.BitmapPixelFormat -ne [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8 -or
+            $bitmap.BitmapAlphaMode -ne [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied) {
+            $bitmap = [Windows.Graphics.Imaging.SoftwareBitmap]::Convert(
+                $bitmap,
+                [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,
+                [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied
+            )
+        }
+
+        $result = Wait-WinRtOperation ($script:OcrEngine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+        $words = foreach ($line in $result.Lines) {
+            foreach ($word in $line.Words) {
+                [pscustomobject]@{
+                    Text   = [string]$word.Text
+                    X      = [double]$word.BoundingRect.X
+                    Y      = [double]$word.BoundingRect.Y
+                    Width  = [double]$word.BoundingRect.Width
+                    Height = [double]$word.BoundingRect.Height
+                }
+            }
+        }
+
+        return [pscustomobject]@{
+            Text      = [string]$result.Text
+            WordCount = @($words).Count
+            Words     = @($words)
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
+function Get-EnlargedLeftColumnOcrWords([string]$ScreenshotPath) {
+    Add-Type -AssemblyName System.Drawing
+
+    $source = [System.Drawing.Bitmap]::new($ScreenshotPath)
+    $cropPaths = [System.Collections.Generic.List[string]]::new()
+    try {
+        # The ticker symbols are rendered in faint gray. OCR them in overlapping,
+        # enlarged strips so symbols near a strip edge are not lost.
+        $cropX = 20
+        $cropWidth = [Math]::Min(380, $source.Width - $cropX)
+        $firstY = 280
+        $lastY = [Math]::Max($firstY, $source.Height - 220)
+        $chunkHeight = 650
+        $chunkStep = 500
+        $scale = 3.0
+        $mappedWords = [System.Collections.Generic.List[object]]::new()
+
+        for ($top = $firstY; $top -lt $lastY; $top += $chunkStep) {
+            $height = [Math]::Min($chunkHeight, $lastY - $top)
+            if ($height -le 0) {
+                break
+            }
+
+            $cropPath = Join-Path $script:WorkDir ("gigamoney-holdings-left-{0}.png" -f ([guid]::NewGuid().ToString('N')))
+            $cropPaths.Add($cropPath)
+            $target = [System.Drawing.Bitmap]::new([int]($cropWidth * $scale), [int]($height * $scale))
+            try {
+                $graphics = [System.Drawing.Graphics]::FromImage($target)
+                try {
+                    $graphics.Clear([System.Drawing.Color]::White)
+                    $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                    $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+                    $graphics.DrawImage(
+                        $source,
+                        [System.Drawing.Rectangle]::new(0, 0, $target.Width, $target.Height),
+                        [System.Drawing.Rectangle]::new($cropX, $top, $cropWidth, $height),
+                        [System.Drawing.GraphicsUnit]::Pixel
+                    )
+                } finally {
+                    $graphics.Dispose()
+                }
+                $target.Save($cropPath, [System.Drawing.Imaging.ImageFormat]::Png)
+            } finally {
+                $target.Dispose()
+            }
+
+            $cropOcr = Invoke-ImageOcr $cropPath
+            foreach ($word in $cropOcr.Words) {
+                $mappedWords.Add([pscustomobject]@{
+                    Text   = [string]$word.Text
+                    X      = $cropX + ([double]$word.X / $scale)
+                    Y      = $top + ([double]$word.Y / $scale)
+                    Width  = [double]$word.Width / $scale
+                    Height = [double]$word.Height / $scale
+                })
+            }
+        }
+
+        # Overlapping strips deliberately produce duplicates. Keep one copy of
+        # each word at approximately the same screen position.
+        $deduplicated = [System.Collections.Generic.List[object]]::new()
+        foreach ($word in @($mappedWords | Sort-Object Y, X)) {
+            $duplicate = @($deduplicated | Where-Object {
+                $_.Text -eq $word.Text -and
+                [Math]::Abs($_.X - $word.X) -lt 8 -and
+                [Math]::Abs($_.Y - $word.Y) -lt 8
+            } | Select-Object -First 1)
+            if (-not $duplicate) {
+                $deduplicated.Add($word)
+            }
+        }
+
+        return @($deduplicated)
+    } finally {
+        $source.Dispose()
+        foreach ($cropPath in $cropPaths) {
+            if (Test-Path -LiteralPath $cropPath) {
+                Remove-Item -LiteralPath $cropPath -Force
+            }
+        }
+    }
+}
+
+function Get-ScreenshotOcr {
+    param([switch]$IncludeEnhancedLeftColumn)
 
     $png = Join-Path $script:WorkDir ("gigamoney-holdings-{0}.png" -f ([guid]::NewGuid().ToString('N')))
     try {
         Save-AdbScreenshot $png
+        $fullOcr = Invoke-ImageOcr $png
+        $leftWords = if ($IncludeEnhancedLeftColumn) {
+            @(Get-EnlargedLeftColumnOcrWords $png)
+        } else {
+            @()
+        }
 
-        $file = Wait-WinRtOperation ([Windows.Storage.StorageFile]::GetFileFromPathAsync($png)) ([Windows.Storage.StorageFile])
-        $stream = Wait-WinRtOperation ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
-        try {
-            $decoder = Wait-WinRtOperation ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
-            $bitmap = Wait-WinRtOperation ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
-            if ($bitmap.BitmapPixelFormat -ne [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8 -or
-                $bitmap.BitmapAlphaMode -ne [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied) {
-                $bitmap = [Windows.Graphics.Imaging.SoftwareBitmap]::Convert(
-                    $bitmap,
-                    [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,
-                    [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied
-                )
-            }
-
-            $result = Wait-WinRtOperation ($script:OcrEngine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-            return [pscustomobject]@{
-                Text      = $result.Text
-                WordCount = @($result.Lines | ForEach-Object { $_.Words }).Count
-            }
-        } finally {
-            $stream.Dispose()
+        return [pscustomobject]@{
+            Text      = $fullOcr.Text
+            WordCount = $fullOcr.WordCount
+            Words     = @($fullOcr.Words)
+            LeftWords = @($leftWords)
         }
     } finally {
         if (Test-Path -LiteralPath $png) {
@@ -193,14 +308,39 @@ function Get-ResourceId([string]$Name) {
     return "${script:PackageName}:id/$Name"
 }
 
-function Get-UiXml {
-    Invoke-AdbInput @('shell', 'uiautomator', 'dump', '/sdcard/window.xml')
-    $raw = & $script:Adb exec-out cat /sdcard/window.xml
-    $text = ($raw -join "`n").Trim()
-    if (-not $text.StartsWith('<?xml')) {
-        throw "Could not read a valid UIAutomator XML dump. Output was: $text"
+function Get-UiXml([int]$MaxAttempts = 2) {
+    $lastOutput = ''
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        # Never reuse a previous screen's XML when UIAutomator cannot reach idle state.
+        & $script:Adb shell rm -f /sdcard/window.xml 2>$null | Out-Null
+        $savedErrorActionPreference = $ErrorActionPreference
+        try {
+            # UIAutomator writes its ordinary "could not get idle state" failure to stderr.
+            # Capture it for retry diagnostics without promoting it to a terminating PowerShell error.
+            $ErrorActionPreference = 'Continue'
+            $dumpOutput = @(& $script:Adb shell uiautomator dump --compressed /sdcard/window.xml 2>&1)
+            $dumpExitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $savedErrorActionPreference
+        }
+        $lastOutput = ($dumpOutput -join "`n").Trim()
+
+        if ($dumpExitCode -eq 0) {
+            $raw = @(& $script:Adb exec-out cat /sdcard/window.xml 2>$null)
+            $text = ($raw -join "`n").Trim()
+            if ($text.StartsWith('<?xml')) {
+                return [xml]$text
+            }
+            $lastOutput = "UIAutomator reported success, but no valid XML was produced. cat output: $text"
+        }
+
+        if ($attempt -lt $MaxAttempts) {
+            Write-Step "UI dump attempt $attempt failed; retrying once."
+            Start-Sleep -Milliseconds 200
+        }
     }
-    return [xml]$text
+
+    throw "Could not capture a current UIAutomator XML dump after $MaxAttempts attempts. Last output: $lastOutput"
 }
 
 function Get-NodeAttribute($Node, [string]$Name) {
@@ -300,7 +440,7 @@ function Get-TradePasswordPromptMarker([xml]$Xml) {
 }
 
 function Enter-ConfiguredTradePassword {
-    Write-Step 'Trade password prompt detected by UI dump; entering configured password.'
+    Write-Step 'Trade password prompt detected; entering configured password.'
     $password = Get-ConfiguredTradePassword
     Invoke-AdbInput @('shell', 'input', 'text', (ConvertTo-AdbInputText $password))
 }
@@ -377,6 +517,8 @@ function Test-HomeOcrText([string]$Text) {
 }
 
 function Ensure-Home {
+    Ensure-GigamoneyAppForeground -AdbPath $script:Adb -PackageName $script:PackageName
+
     for ($attempt = 0; $attempt -le $MaxHomeBacks; $attempt++) {
         $ocr = Get-ScreenshotOcr
         if (Test-HomeOcrText $ocr.Text) {
@@ -410,23 +552,50 @@ function Get-PortfolioPageMarker([xml]$Xml) {
     return $null
 }
 
-function Test-PortfolioTop([xml]$Xml) {
-    return [bool](
-        (Find-UiNodeByResourceId $Xml (Get-ResourceId 'card_portfolio_view')) -and
-        (
-            (Find-UiNodeByResourceId $Xml (Get-ResourceId 'tv_cash')) -or
-            (Find-UiNodeByResourceId $Xml (Get-ResourceId 'tv_cash_value')) -or
-            (Find-UiNodeByResourceId $Xml (Get-ResourceId 'll_cash'))
+function Find-CashButtonByOcr($Ocr) {
+    $candidates = @($Ocr.Words | Where-Object {
+        $centerX = [double]$_.X + ([double]$_.Width / 2)
+        $centerY = [double]$_.Y + ([double]$_.Height / 2)
+        return (
+            (($_.Text -replace '[^A-Za-z]', '').ToUpperInvariant() -eq 'CASH') -and
+            $centerX -ge 650 -and
+            $centerY -ge 250 -and
+            $centerY -le 900
         )
-    )
+    })
+    if (-not $candidates) {
+        return $null
+    }
+
+    # Prefer the Cash > control near its recorded top-card position. The bounds above
+    # deliberately exclude the lower "Opt in Cash Plus >" row and the Cash Plus page title.
+    $target = $candidates | Sort-Object {
+        $centerX = [double]$_.X + ([double]$_.Width / 2)
+        $centerY = [double]$_.Y + ([double]$_.Height / 2)
+        [math]::Pow($centerX - $script:CashTileCenter.X, 2) + [math]::Pow($centerY - $script:CashTileCenter.Y, 2)
+    } | Select-Object -First 1
+
+    return [pscustomobject]@{
+        Text    = $target.Text
+        CenterX = [int]([double]$target.X + ([double]$target.Width / 2))
+        CenterY = [int]([double]$target.Y + ([double]$target.Height / 2))
+    }
 }
 
-function Ensure-PortfolioTop([xml]$InitialXml = $null) {
+function Ensure-PortfolioTop {
     for ($attempt = 0; $attempt -le $MaxPortfolioScrolls; $attempt++) {
-        $xml = if ($attempt -eq 0 -and $InitialXml) { $InitialXml } else { Get-UiXml }
-        if (Test-PortfolioTop $xml) {
-            Write-Step 'Portfolio top is visible.'
-            return $xml
+        $ocr = Get-ScreenshotOcr
+
+        if (($ocr.Text -replace '\s+', ' ') -match '(?i)\bEnter\s+Trade\s+Password\b') {
+            Enter-ConfiguredTradePassword
+            Start-Sleep -Milliseconds 3000
+            continue
+        }
+
+        $cashButton = Find-CashButtonByOcr $ocr
+        if ($cashButton) {
+            Write-Step 'Portfolio top Cash > button matched by OCR.'
+            return $cashButton
         }
 
         if ($attempt -eq $MaxPortfolioScrolls) {
@@ -445,16 +614,8 @@ function Ensure-PortfolioTop([xml]$InitialXml = $null) {
 function Open-Portfolio {
     Write-Step 'Opening Portfolio.'
     Tap $script:PortfolioTabCenter.X $script:PortfolioTabCenter.Y
-
-    $result = Wait-ForUiNodeOrTradePassword {
-        param($Xml)
-        return Get-PortfolioPageMarker $Xml
-    } 'Portfolio page' -TimeoutMs 8000
-    if (-not $result) {
-        throw 'Portfolio page did not open.'
-    }
-
-    return Ensure-PortfolioTop $result.Xml
+    Start-Sleep -Milliseconds 700
+    return Ensure-PortfolioTop
 }
 
 function Get-PortfolioOverview([xml]$Xml) {
@@ -547,8 +708,10 @@ function Add-PositionIfNew([System.Collections.Specialized.OrderedDictionary]$Po
     }
 
     $existing = $PositionsBySymbol[$key]
-    if (-not $existing.market -and $Position.market) {
-        $existing.market = $Position.market
+    foreach ($name in @('market', 'name', 'marketValue', 'quantity', 'marketPrice', 'cost', 'dailyPL', 'dailyPLPercent')) {
+        if (-not $existing.$name -and $Position.$name) {
+            $existing.$name = $Position.$name
+        }
     }
 }
 
@@ -610,76 +773,165 @@ function Get-TextSignature([xml]$Xml) {
     return (@($Xml.SelectNodes('//node') | ForEach-Object { Get-NodeAttribute $_ 'text' } | Where-Object { $_ }) -join '|')
 }
 
-function Collect-PortfolioData([xml]$InitialXml) {
-    $overview = Get-PortfolioOverview $InitialXml
+function Get-OcrWordCenterX($Word) {
+    return [double]$Word.X + ([double]$Word.Width / 2.0)
+}
+
+function Get-OcrWordCenterY($Word) {
+    return [double]$Word.Y + ([double]$Word.Height / 2.0)
+}
+
+function Test-OcrNumericText([string]$Text) {
+    if ([string]::IsNullOrWhiteSpace($Text) -or $Text -notmatch '\d') {
+        return $false
+    }
+    return ($Text -notmatch '[A-Za-z]')
+}
+
+function Find-OcrColumnWord {
+    param(
+        [object[]]$Words,
+        [double]$TargetY,
+        [double]$MinCenterX,
+        [double]$MaxCenterX,
+        [double]$ToleranceY = 36,
+        [switch]$RequirePercent
+    )
+
+    return @($Words | Where-Object {
+        $centerX = Get-OcrWordCenterX $_
+        $centerY = Get-OcrWordCenterY $_
+        $numeric = Test-OcrNumericText ([string]$_.Text)
+        $percentMatches = -not $RequirePercent -or ([string]$_.Text).Contains('%')
+        $numeric -and $percentMatches -and
+        $centerX -ge $MinCenterX -and $centerX -le $MaxCenterX -and
+        [Math]::Abs($centerY - $TargetY) -le $ToleranceY
+    } | Sort-Object @{ Expression = { [Math]::Abs((Get-OcrWordCenterY $_) - $TargetY) } },
+                    @{ Expression = { [Math]::Abs((Get-OcrWordCenterX $_) - (($MinCenterX + $MaxCenterX) / 2.0)) } } |
+        Select-Object -First 1)
+}
+
+function Get-VisiblePositionsByOcr($Ocr) {
+    $excludedSymbols = @(
+        'ACCOUNT', 'BUY', 'CASH', 'COST', 'DAILY', 'FUND', 'HK', 'MP', 'MV',
+        'NAME', 'ORDERS', 'PORTFOLIO', 'PL', 'QTY', 'SELL', 'TRADE', 'US'
+    )
+    $candidateRows = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($word in @($Ocr.LeftWords | Sort-Object Y, X)) {
+        $symbol = ([string]$word.Text).Trim().ToUpperInvariant()
+        if ($symbol -notmatch '^(?:[A-Z][A-Z0-9.\-]{0,11}|[0-9]{4,6})$' -or $symbol -in $excludedSymbols) {
+            continue
+        }
+
+        $tickerY = Get-OcrWordCenterY $word
+        $percent = Find-OcrColumnWord -Words $Ocr.Words -TargetY $tickerY -MinCenterX 840 -MaxCenterX 1075 -RequirePercent
+        if (-not $percent) {
+            # Company names and navigation labels may also be uppercase. The
+            # percentage in the right column uniquely identifies the ticker row.
+            continue
+        }
+
+        $existing = @($candidateRows | Where-Object {
+            $_.Symbol -eq $symbol -and [Math]::Abs($_.TickerY - $tickerY) -lt 12
+        } | Select-Object -First 1)
+        if (-not $existing) {
+            $candidateRows.Add([pscustomobject]@{
+                Symbol  = $symbol
+                TickerY = $tickerY
+                Percent = $percent
+            })
+        }
+    }
+
+    $positions = foreach ($row in $candidateRows) {
+        $upperY = $row.TickerY - 50
+        $marketValue = Find-OcrColumnWord -Words $Ocr.Words -TargetY $upperY -MinCenterX 390 -MaxCenterX 625
+        $quantity = Find-OcrColumnWord -Words $Ocr.Words -TargetY $row.TickerY -MinCenterX 390 -MaxCenterX 625
+        $marketPrice = Find-OcrColumnWord -Words $Ocr.Words -TargetY $upperY -MinCenterX 640 -MaxCenterX 840
+        $cost = Find-OcrColumnWord -Words $Ocr.Words -TargetY $row.TickerY -MinCenterX 640 -MaxCenterX 840
+        $dailyPL = Find-OcrColumnWord -Words $Ocr.Words -TargetY $upperY -MinCenterX 840 -MaxCenterX 1075
+
+        if (-not $quantity -or -not $cost) {
+            Write-Step "Ignoring partially visible OCR row for $($row.Symbol)."
+            continue
+        }
+
+        [pscustomobject][ordered]@{
+            market         = ''
+            symbol         = $row.Symbol
+            name           = ''
+            marketValue    = if ($marketValue) { [string]$marketValue.Text } else { '' }
+            quantity       = [string]$quantity.Text
+            marketPrice    = if ($marketPrice) { [string]$marketPrice.Text } else { '' }
+            cost           = [string]$cost.Text
+            dailyPL        = if ($dailyPL) { [string]$dailyPL.Text } else { '' }
+            dailyPLPercent = [string]$row.Percent.Text
+            ocrRowY        = [double]$row.TickerY
+        }
+    }
+
+    return @($positions)
+}
+
+function Test-PortfolioBottomByOcr($Ocr) {
+    return [bool]($Ocr.Text -match '(?i)\bFund\b|Opt\s+in\s+Cash\s+Plus|Cash\s+Plus')
+}
+
+function Collect-PortfolioData {
     $positionsBySymbol = [System.Collections.Specialized.OrderedDictionary]::new()
-    $summariesByMarket = [System.Collections.Specialized.OrderedDictionary]::new()
-    $fundsByName = [System.Collections.Specialized.OrderedDictionary]::new()
     $lastSignature = ''
-    $lastMarket = ''
-    $bottomOcr = $null
+    $reachedBottom = $false
 
     for ($scroll = 0; $scroll -le $MaxPortfolioScrolls; $scroll++) {
-        $xml = if ($scroll -eq 0 -and $InitialXml) { $InitialXml } else { Get-UiXml }
-        $visibleSummaries = Get-VisibleMarketSummaries $xml
-        foreach ($summary in $visibleSummaries) {
-            Add-MarketSummaryIfNew $summariesByMarket $summary
-        }
-        foreach ($position in Get-VisiblePositions $xml $lastMarket) {
+        $ocr = Get-ScreenshotOcr -IncludeEnhancedLeftColumn
+        $visiblePositions = @(Get-VisiblePositionsByOcr $ocr)
+        foreach ($position in $visiblePositions) {
             Add-PositionIfNew $positionsBySymbol $position
         }
-        foreach ($fund in Get-VisibleFunds $xml) {
-            Add-FundIfNew $fundsByName $fund
-        }
-        $markets = @($visibleSummaries | Where-Object { $_.market } | Select-Object -ExpandProperty market)
-        if ($markets) {
-            $lastMarket = $markets[-1]
-        }
 
-        if (Test-PortfolioBottom $xml) {
+        if (Test-PortfolioBottomByOcr $ocr) {
             Write-Step 'Reached bottom of Portfolio positions.'
-            $bottomOcr = Get-ScreenshotOcr
+            $reachedBottom = $true
             break
         }
 
-        $signature = Get-TextSignature $xml
+        # Ignore live prices when deciding whether scrolling moved. Only stable
+        # ticker names and their vertical locations participate in the signature.
+        $signature = (@($visiblePositions | ForEach-Object {
+            "{0}:{1}" -f $_.symbol, [Math]::Round($_.ocrRowY / 20.0)
+        }) -join '|')
         if ($scroll -gt 0 -and $signature -eq $lastSignature) {
             Write-Step 'Reached bottom of Portfolio positions.'
-            $bottomOcr = Get-ScreenshotOcr
+            $reachedBottom = $true
             break
         }
 
         $lastSignature = $signature
+        if ($scroll -eq $MaxPortfolioScrolls) {
+            break
+        }
+
         Swipe 540 2070 540 760 180
-        Start-Sleep -Milliseconds 150
+        Start-Sleep -Milliseconds 350
     }
 
-    if (-not $bottomOcr) {
-        $bottomOcr = Get-ScreenshotOcr
+    if (-not $reachedBottom) {
+        throw "Portfolio bottom was not reached after $MaxPortfolioScrolls scrolls; refusing to publish partial holdings."
     }
 
     return [pscustomobject][ordered]@{
-        overview                    = $overview
-        marketSummaries             = @($summariesByMarket.Values)
-        positions                   = @($positionsBySymbol.Values)
-        funds                       = @($fundsByName.Values)
-        bottomPositionsOcrWordCount = $bottomOcr.WordCount
+        positions = @($positionsBySymbol.Values | ForEach-Object {
+            $_.PSObject.Properties.Remove('ocrRowY')
+            $_
+        })
     }
 }
 
-function Open-CashPage([xml]$PortfolioTopXml = $null) {
-    $xml = if ($PortfolioTopXml) { $PortfolioTopXml } else { Get-UiXml }
-    $cashNode = Find-UiNodeByResourceId $xml (Get-ResourceId 'tv_cash')
-    if (-not $cashNode) {
-        $cashNode = Find-UiNodeByResourceId $xml (Get-ResourceId 'tv_cash_value')
-    }
-    if (-not $cashNode) {
-        $cashNode = Find-UiNodeByResourceId $xml (Get-ResourceId 'll_cash')
-    }
-
+function Open-CashPage($CashButtonMatch) {
     Write-Step 'Opening Cash page.'
-    if ($cashNode) {
-        Tap-Node $cashNode
+    if ($CashButtonMatch) {
+        Tap $CashButtonMatch.CenterX $CashButtonMatch.CenterY
     } else {
         Tap $script:CashTileCenter.X $script:CashTileCenter.Y
     }
@@ -762,16 +1014,16 @@ function Get-CashData([xml]$Xml) {
 Assert-Environment
 Write-Step 'Starting Gigamoney holdings query.'
 Ensure-Home
-$portfolioXml = Open-Portfolio
-$cashXml = Open-CashPage $portfolioXml
+$cashButtonMatch = Open-Portfolio
+$cashXml = Open-CashPage $cashButtonMatch
 $cash = Get-CashData $cashXml
 Return-ToPortfolioFromCash -SkipVerification | Out-Null
-$portfolio = Collect-PortfolioData $portfolioXml
+$portfolio = Collect-PortfolioData
 
 $result = [pscustomobject][ordered]@{
     queriedAt = (Get-Date).ToString('o')
-    portfolio = $portfolio
     cash      = $cash
+    positions = @($portfolio.positions)
 }
 
 $result | ConvertTo-Json -Depth 10
