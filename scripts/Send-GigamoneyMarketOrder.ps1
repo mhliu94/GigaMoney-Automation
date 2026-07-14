@@ -408,6 +408,7 @@ function Wait-ForUiNode([scriptblock]$FindNode, [int]$TimeoutMs = 6000, [int]$Po
 
 function Ensure-Home {
     Ensure-GigamoneyAppForeground -AdbPath $script:Adb -PackageName $script:PackageName
+    Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir | Out-Null
 
     for ($attempt = 0; $attempt -le $MaxHomeBacks; $attempt++) {
         $ocr = Get-ScreenshotOcr
@@ -590,6 +591,25 @@ function Fill-OrderTicket($TicketNodes = $null) {
 }
 
 function Submit-OrderTicket {
+    $dismissedAds = Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir
+    if ($dismissedAds -gt 0) {
+        Start-Sleep -Milliseconds 300
+        $ticketNodes = Get-TradeTicketNodes (Get-UiXml)
+        if (-not ($ticketNodes.Qty -and $ticketNodes.Submit)) {
+            throw 'The market-order ticket was not available after dismissing an ad before submission.'
+        }
+
+        Set-TextField $ticketNodes.Qty $Quantity 'Qty'
+        $ticketNodes = Get-TradeTicketNodes (Get-UiXml)
+        if (-not $ticketNodes.Submit) {
+            throw 'The market-order Submit control was not available after restoring the ticket.'
+        }
+
+        Write-Step 'Submitting restored order ticket.'
+        Tap-Node $ticketNodes.Submit
+        return
+    }
+
     Write-Step 'Submitting order ticket.'
     Tap $script:KeyboardSubmitButtonBounds.CenterX $script:KeyboardSubmitButtonBounds.CenterY
 }

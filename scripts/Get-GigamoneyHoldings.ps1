@@ -518,6 +518,7 @@ function Test-HomeOcrText([string]$Text) {
 
 function Ensure-Home {
     Ensure-GigamoneyAppForeground -AdbPath $script:Adb -PackageName $script:PackageName
+    Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir | Out-Null
 
     for ($attempt = 0; $attempt -le $MaxHomeBacks; $attempt++) {
         $ocr = Get-ScreenshotOcr
@@ -612,6 +613,7 @@ function Ensure-PortfolioTop {
 }
 
 function Open-Portfolio {
+    Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir | Out-Null
     Write-Step 'Opening Portfolio.'
     Tap $script:PortfolioTabCenter.X $script:PortfolioTabCenter.Y
     Start-Sleep -Milliseconds 700

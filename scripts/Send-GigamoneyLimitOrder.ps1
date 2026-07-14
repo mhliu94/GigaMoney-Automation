@@ -451,6 +451,7 @@ function Wait-ForUiNode([scriptblock]$FindNode, [int]$TimeoutMs = 6000, [int]$Po
 
 function Ensure-Home {
     Ensure-GigamoneyAppForeground -AdbPath $script:Adb -PackageName $script:PackageName
+    Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir | Out-Null
 
     for ($attempt = 0; $attempt -le $MaxHomeBacks; $attempt++) {
         $ocr = Get-ScreenshotOcr
@@ -625,6 +626,31 @@ function Fill-OrderTicket($TicketNodes = $null) {
 }
 
 function Submit-OrderTicket {
+    $dismissedAds = Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir
+    if ($dismissedAds -gt 0) {
+        Start-Sleep -Milliseconds 300
+        $ticketNodes = Get-TradeTicketNodes (Get-UiXml)
+        if (-not ($ticketNodes.Price -and $ticketNodes.Qty -and $ticketNodes.Submit)) {
+            throw 'The limit-order ticket was not available after dismissing an ad before submission.'
+        }
+
+        Set-TextField $ticketNodes.Price $Price 'Price'
+        $ticketNodes = Get-TradeTicketNodes (Get-UiXml)
+        if (-not $ticketNodes.Qty) {
+            throw 'The limit-order Qty field was not available while restoring the ticket.'
+        }
+        Set-TextField $ticketNodes.Qty $Quantity 'Qty'
+
+        $ticketNodes = Get-TradeTicketNodes (Get-UiXml)
+        if (-not $ticketNodes.Submit) {
+            throw 'The limit-order Submit control was not available after restoring the ticket.'
+        }
+
+        Write-Step 'Submitting restored order ticket.'
+        Tap-Node $ticketNodes.Submit
+        return
+    }
+
     Write-Step 'Submitting order ticket.'
     Tap $script:KeyboardSubmitButtonBounds.CenterX $script:KeyboardSubmitButtonBounds.CenterY
 }
@@ -654,7 +680,36 @@ function Write-FillOrKillFillSummary($OrderResult) {
     Write-Step "Fill-or-kill filled price: $filledPrice; filled qty: $filledQty."
 }
 
+function Get-CancelConfirmButton([xml]$Xml) {
+    $node = Find-UiNodeByResourceId $Xml (Get-ResourceId 'common_rb_right')
+    if ($node) {
+        return $node
+    }
+
+    foreach ($text in @('Confirm', 'OK', 'Yes')) {
+        $node = Find-UiNodeByText $Xml $text -Exact -Where {
+            param($Candidate)
+            $rect = Convert-BoundsToRect (Get-NodeAttribute $Candidate 'bounds')
+            return $rect.Top -gt 1500
+        }
+        if ($node) {
+            return $node
+        }
+    }
+
+    return $null
+}
+
 function Invoke-FillOrKillCancel($OrderResult) {
+    $dismissedAds = Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir
+    if ($dismissedAds -gt 0) {
+        Start-Sleep -Milliseconds 300
+        $OrderResult = Get-OrderResultByUiDump
+        if (-not $OrderResult.IsSubmissionSuccess) {
+            throw 'The order result page was not available after dismissing an ad before the fill-or-kill cancel step.'
+        }
+    }
+
     if (Test-OrderFullyFilled $OrderResult) {
         Write-Step 'Kill requested, but the order is already fully filled; no cancel needed.'
         Write-FillOrKillFillSummary $OrderResult
@@ -670,8 +725,18 @@ function Invoke-FillOrKillCancel($OrderResult) {
     Write-Step 'Kill requested; pressing Cancel.'
     Tap-Node $OrderResult.CancelNode
     Start-Sleep -Milliseconds 1000
+    $dismissedAds = Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir
     Write-Step 'Confirming cancel.'
-    Tap $script:CancelConfirmButtonBounds.CenterX $script:CancelConfirmButtonBounds.CenterY
+    if ($dismissedAds -gt 0) {
+        Start-Sleep -Milliseconds 300
+        $confirmButton = Get-CancelConfirmButton (Get-UiXml)
+        if (-not $confirmButton) {
+            throw 'The cancel confirmation was not available after dismissing an ad during the fill-or-kill flow.'
+        }
+        Tap-Node $confirmButton
+    } else {
+        Tap $script:CancelConfirmButtonBounds.CenterX $script:CancelConfirmButtonBounds.CenterY
+    }
 
     $passwordHandled = Handle-TradePasswordIfPresent
     if (-not $passwordHandled) {

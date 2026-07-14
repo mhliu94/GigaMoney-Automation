@@ -394,6 +394,7 @@ function Test-HomeOcrText([string]$Text) {
 
 function Ensure-Home {
     Ensure-GigamoneyAppForeground -AdbPath $script:Adb -PackageName $script:PackageName
+    Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir | Out-Null
 
     for ($attempt = 0; $attempt -le $MaxHomeBacks; $attempt++) {
         $ocr = Get-ScreenshotOcr
@@ -589,8 +590,18 @@ function Get-CancelConfirmButton([xml]$Xml) {
 
 function Confirm-CancelAction {
     Start-Sleep -Milliseconds 700
+    $dismissedAds = Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir
     Write-Step 'Confirming cancel.'
-    Tap $script:CancelConfirmButtonCenter.X $script:CancelConfirmButtonCenter.Y
+    if ($dismissedAds -gt 0) {
+        Start-Sleep -Milliseconds 300
+        $confirmButton = Get-CancelConfirmButton (Get-UiXml)
+        if (-not $confirmButton) {
+            throw 'The cancel confirmation was not available after dismissing an ad.'
+        }
+        Tap-Node $confirmButton
+    } else {
+        Tap $script:CancelConfirmButtonCenter.X $script:CancelConfirmButtonCenter.Y
+    }
     Start-Sleep -Milliseconds 2000
 }
 
@@ -631,6 +642,12 @@ function Get-OrdersXmlAfterCancel {
 }
 
 function Cancel-FirstInProgressOrder([xml]$OrdersXml) {
+    $dismissedAds = Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir
+    if ($dismissedAds -gt 0) {
+        Start-Sleep -Milliseconds 300
+        $OrdersXml = Get-UiXml
+    }
+
     $rows = @(Get-InProgressOrderRows $OrdersXml)
     if (-not $rows) {
         return $null
