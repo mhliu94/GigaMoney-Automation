@@ -545,29 +545,58 @@ function Ensure-TradeTicketOpen {
         throw "No recorded coordinate is available for side: $Side."
     }
 
-    Write-Step "Opening $Side ticket."
-    $tapStartedAt = [DateTime]::UtcNow
-    Tap $sidePoint.X $sidePoint.Y
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        Write-Step "Opening $Side ticket (attempt $attempt/2)."
+        $tapStartedAt = [DateTime]::UtcNow
+        Tap $sidePoint.X $sidePoint.Y
 
-    $passwordHandled = Handle-TradePasswordIfPresent
-    if (-not $passwordHandled) {
-        $elapsedMs = [int](([DateTime]::UtcNow - $tapStartedAt).TotalMilliseconds)
-        $remainingMs = $script:TicketOpenDelayMs - $elapsedMs
-        if ($remainingMs -gt 0) {
-            Start-Sleep -Milliseconds $remainingMs
+        $passwordHandled = Handle-TradePasswordIfPresent
+        if (-not $passwordHandled) {
+            $elapsedMs = [int](([DateTime]::UtcNow - $tapStartedAt).TotalMilliseconds)
+            $remainingMs = $script:TicketOpenDelayMs - $elapsedMs
+            if ($remainingMs -gt 0) {
+                Start-Sleep -Milliseconds $remainingMs
+            }
+        }
+
+        $ticketNodes = Get-TradeTicketNodes (Get-UiXml)
+        if ($ticketNodes.Price -and $ticketNodes.Qty -and $ticketNodes.Submit) {
+            Write-Step 'Trade ticket opened and required controls are visible.'
+            return $ticketNodes
+        }
+
+        if ($attempt -lt 2) {
+            Write-Step 'Trade ticket controls were not visible after the first tap; retrying.'
+            Start-Sleep -Milliseconds 500
         }
     }
 
-    Write-Step 'Trade ticket opened.'
+    throw "Could not open the $Side ticket with the Price, Qty, and Submit controls visible after 2 attempts."
 }
 
 function Ensure-MarketOrderType {
     Write-Step 'Changing order type to Market.'
     Tap $script:LimitOrderTypeControlBounds.CenterX $script:LimitOrderTypeControlBounds.CenterY
     Start-Sleep -Milliseconds 500
-    Tap $script:MarketOrderTypeOptionBounds.CenterX $script:MarketOrderTypeOptionBounds.CenterY
+
+    $typeMenuXml = Get-UiXml
+    $marketOption = Find-UiNodeByText $typeMenuXml 'Market' -Exact -PreferBottom
+    if (-not $marketOption) {
+        throw 'The Market option was not visible after opening the order-type menu.'
+    }
+    Tap-Node $marketOption
     Start-Sleep -Milliseconds 700
-    Write-Step 'Order type is Market.'
+
+    $marketXml = Get-UiXml
+    $typeNode = Find-UiNodeByResourceId $marketXml (Get-ResourceId 'tv_quick_type_content')
+    $ticketNodes = Get-TradeTicketNodes $marketXml
+    if (-not $typeNode -or (Get-NodeAttribute $typeNode 'text') -ne 'Market' -or
+        -not ($ticketNodes.Qty -and $ticketNodes.Submit)) {
+        throw 'The order type did not change to Market with the Qty and Submit controls visible.'
+    }
+
+    Write-Step 'Order type is Market and required controls are visible.'
+    return $ticketNodes
 }
 
 function ConvertTo-AdbInputText([string]$Text) {
@@ -641,7 +670,7 @@ function Invoke-OrderAttempt([int]$AttemptNumber) {
     $homeOcr = Ensure-Home
     Open-SymbolDetails $Symbol $homeOcr
     $ticketNodes = Ensure-TradeTicketOpen
-    Ensure-MarketOrderType
+    $ticketNodes = Ensure-MarketOrderType
 
     if ($DryRun) {
         $nodes = if ($ticketNodes) { $ticketNodes } else { Get-TradeTicketNodes (Get-UiXml) }

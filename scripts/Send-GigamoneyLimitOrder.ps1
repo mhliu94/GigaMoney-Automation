@@ -588,20 +588,33 @@ function Ensure-TradeTicketOpen {
         throw "No recorded coordinate is available for side: $Side."
     }
 
-    Write-Step "Opening $Side ticket."
-    $tapStartedAt = [DateTime]::UtcNow
-    Tap $sidePoint.X $sidePoint.Y
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        Write-Step "Opening $Side ticket (attempt $attempt/2)."
+        $tapStartedAt = [DateTime]::UtcNow
+        Tap $sidePoint.X $sidePoint.Y
 
-    $passwordHandled = Handle-TradePasswordIfPresent
-    if (-not $passwordHandled) {
-        $elapsedMs = [int](([DateTime]::UtcNow - $tapStartedAt).TotalMilliseconds)
-        $remainingMs = $script:TicketOpenDelayMs - $elapsedMs
-        if ($remainingMs -gt 0) {
-            Start-Sleep -Milliseconds $remainingMs
+        $passwordHandled = Handle-TradePasswordIfPresent
+        if (-not $passwordHandled) {
+            $elapsedMs = [int](([DateTime]::UtcNow - $tapStartedAt).TotalMilliseconds)
+            $remainingMs = $script:TicketOpenDelayMs - $elapsedMs
+            if ($remainingMs -gt 0) {
+                Start-Sleep -Milliseconds $remainingMs
+            }
+        }
+
+        $ticketNodes = Get-TradeTicketNodes (Get-UiXml)
+        if ($ticketNodes.Price -and $ticketNodes.Qty -and $ticketNodes.Submit) {
+            Write-Step 'Trade ticket opened and required controls are visible.'
+            return $ticketNodes
+        }
+
+        if ($attempt -lt 2) {
+            Write-Step 'Trade ticket controls were not visible after the first tap; retrying.'
+            Start-Sleep -Milliseconds 500
         }
     }
 
-    Write-Step 'Trade ticket opened.'
+    throw "Could not open the $Side ticket with the Price, Qty, and Submit controls visible after 2 attempts."
 }
 
 function ConvertTo-AdbInputText([string]$Text) {
