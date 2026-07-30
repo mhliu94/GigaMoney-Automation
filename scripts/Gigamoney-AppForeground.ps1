@@ -66,18 +66,19 @@ function Test-GigamoneyNotRespondingOcrText {
     return ($normalized -match "(?i)\bisn't responding\b")
 }
 
-function Restart-GigamoneyAppAfterNotResponding {
+function Restart-GigamoneyApp {
     param(
         [Parameter(Mandatory = $true)][string]$AdbPath,
         [Parameter(Mandatory = $true)][string]$PackageName,
+        [Parameter(Mandatory = $true)][string]$Reason,
         [int]$StopSettleMilliseconds = 1000,
         [int]$LaunchSettleMilliseconds = 3500
     )
 
-    Write-Step "Gigamoney isn't responding; closing and reopening the app before the operation."
+    Write-Step "$Reason; closing and reopening the app before the operation."
     & $AdbPath shell am force-stop $PackageName | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not force-stop unresponsive Gigamoney package $PackageName with adb."
+        throw "Could not force-stop Gigamoney package $PackageName with adb."
     }
 
     if ($StopSettleMilliseconds -gt 0) {
@@ -86,12 +87,28 @@ function Restart-GigamoneyAppAfterNotResponding {
 
     & $AdbPath shell monkey -p $PackageName -c android.intent.category.LAUNCHER 1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "Could not relaunch unresponsive Gigamoney package $PackageName with adb."
+        throw "Could not relaunch Gigamoney package $PackageName with adb."
     }
 
     if ($LaunchSettleMilliseconds -gt 0) {
         Start-Sleep -Milliseconds $LaunchSettleMilliseconds
     }
+}
+
+function Restart-GigamoneyAppAfterNotResponding {
+    param(
+        [Parameter(Mandatory = $true)][string]$AdbPath,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [int]$StopSettleMilliseconds = 1000,
+        [int]$LaunchSettleMilliseconds = 3500
+    )
+
+    Restart-GigamoneyApp `
+        -AdbPath $AdbPath `
+        -PackageName $PackageName `
+        -Reason "Gigamoney isn't responding" `
+        -StopSettleMilliseconds $StopSettleMilliseconds `
+        -LaunchSettleMilliseconds $LaunchSettleMilliseconds
 }
 
 function New-GigamoneyLightRegionStats {
@@ -368,24 +385,37 @@ function Dismiss-GigamoneyAdScreenIfPresent {
     param(
         [Parameter(Mandatory = $true)][string]$AdbPath,
         [Parameter(Mandatory = $true)][string]$WorkDir,
+        [string]$PackageName = 'lb.whale.hkwinner.android',
         [int]$MaxDismissals = 2,
         [int]$SettleMilliseconds = 600
     )
 
-    $dismissed = 0
+    $handledScreens = 0
+    $backPresses = 0
+    $restartedAfterAmbiguous = $false
     while ($true) {
         $classification = Get-StableGigamoneyAdScreenClassification -AdbPath $AdbPath -WorkDir $WorkDir
         if ($classification.Kind -in @('None', 'ConfirmationLike')) {
-            if ($dismissed -gt 0) {
-                Write-Step "Ad screen dismissed; continuing the requested Gigamoney operation."
+            if ($handledScreens -gt 0) {
+                Write-Step "Ad or ambiguous overlay cleared; continuing the requested Gigamoney operation."
             }
-            return $dismissed
+            return $handledScreens
         }
 
         if ($classification.Kind -eq 'Ambiguous') {
-            throw 'The pre-operation screen resembles a dim overlay but could not be identified safely as an ad or a bottom-lit confirmation screen. Refusing to perform the operation.'
+            if ($restartedAfterAmbiguous) {
+                throw 'The screen still resembles an ambiguous dim overlay after Gigamoney was restarted. Refusing to perform the operation.'
+            }
+
+            $profile = $classification.Profile
+            $reason = "Ambiguous dim overlay detected (center={0:N0}, lower={1:N0}, footer={2:N0})" -f $profile.Center.Mean, $profile.Lower.Mean, $profile.Footer.Mean
+            Restart-GigamoneyApp -AdbPath $AdbPath -PackageName $PackageName -Reason $reason
+            Ensure-GigamoneyAppForeground -AdbPath $AdbPath -PackageName $PackageName
+            $restartedAfterAmbiguous = $true
+            $handledScreens++
+            continue
         }
-        if ($dismissed -ge $MaxDismissals) {
+        if ($backPresses -ge $MaxDismissals) {
             throw "An ad screen is still visible after $MaxDismissals Back presses. Refusing to perform the operation."
         }
 
@@ -396,7 +426,8 @@ function Dismiss-GigamoneyAdScreenIfPresent {
             throw "Could not dismiss the ad screen with the Android Back key (adb exit code $LASTEXITCODE)."
         }
 
-        $dismissed++
+        $backPresses++
+        $handledScreens++
         Start-Sleep -Milliseconds $SettleMilliseconds
     }
 }
