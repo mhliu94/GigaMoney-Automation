@@ -443,7 +443,6 @@ function Invoke-ChildScript([string]$Path, [string[]]$Arguments, [switch]$Captur
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "Trading helper script was not found: $Path"
     }
-    Ensure-GigamoneyAppForeground
     $output = & $script:PowerShellExe -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments
     $exitCode = $LASTEXITCODE
     if (-not $CaptureOutput) {
@@ -726,7 +725,6 @@ function Start-TradingRunner($Config) {
     if ($script:AppLaunchTimeoutSeconds -le 0) {
         throw 'gigamoney.foregroundLaunchTimeoutSeconds must be positive.'
     }
-    Ensure-GigamoneyAppForeground
     $accountId = Get-RequiredString $Config 'gigamoney.accountId'
     $commandTopic = Get-RequiredString $Config 'kafka.commandTopic'
     $pollSeconds = [double](Get-ConfigValue $Config 'kafka.pollTimeoutSeconds' 1)

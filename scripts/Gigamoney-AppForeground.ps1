@@ -55,6 +55,45 @@ function Ensure-GigamoneyAppForeground {
     throw "Gigamoney did not reach the foreground within $TimeoutSeconds seconds after launch."
 }
 
+function Test-GigamoneyNotRespondingOcrText {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $false
+    }
+
+    $normalized = ($Text -replace '[\u2018\u2019\u02BC\uFF07]', "'") -replace '\s+', ' '
+    return ($normalized -match "(?i)\bisn't responding\b")
+}
+
+function Restart-GigamoneyAppAfterNotResponding {
+    param(
+        [Parameter(Mandatory = $true)][string]$AdbPath,
+        [Parameter(Mandatory = $true)][string]$PackageName,
+        [int]$StopSettleMilliseconds = 1000,
+        [int]$LaunchSettleMilliseconds = 3500
+    )
+
+    Write-Step "Gigamoney isn't responding; closing and reopening the app before the operation."
+    & $AdbPath shell am force-stop $PackageName | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not force-stop unresponsive Gigamoney package $PackageName with adb."
+    }
+
+    if ($StopSettleMilliseconds -gt 0) {
+        Start-Sleep -Milliseconds $StopSettleMilliseconds
+    }
+
+    & $AdbPath shell monkey -p $PackageName -c android.intent.category.LAUNCHER 1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not relaunch unresponsive Gigamoney package $PackageName with adb."
+    }
+
+    if ($LaunchSettleMilliseconds -gt 0) {
+        Start-Sleep -Milliseconds $LaunchSettleMilliseconds
+    }
+}
+
 function New-GigamoneyLightRegionStats {
     param(
         [long]$LumaSum,

@@ -450,11 +450,34 @@ function Wait-ForUiNode([scriptblock]$FindNode, [int]$TimeoutMs = 6000, [int]$Po
 }
 
 function Ensure-Home {
+    $ocr = Get-ScreenshotOcr
+    $restartedAfterNotResponding = $false
+    if (Test-GigamoneyNotRespondingOcrText $ocr.Text) {
+        Restart-GigamoneyAppAfterNotResponding -AdbPath $script:Adb -PackageName $script:PackageName
+        $restartedAfterNotResponding = $true
+    }
+
     Ensure-GigamoneyAppForeground -AdbPath $script:Adb -PackageName $script:PackageName
-    Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir | Out-Null
+    $ocr = Get-ScreenshotOcr
+    if (Test-GigamoneyNotRespondingOcrText $ocr.Text) {
+        if ($restartedAfterNotResponding) {
+            throw "Gigamoney still isn't responding after it was restarted."
+        }
+
+        Restart-GigamoneyAppAfterNotResponding -AdbPath $script:Adb -PackageName $script:PackageName
+        Ensure-GigamoneyAppForeground -AdbPath $script:Adb -PackageName $script:PackageName
+        $ocr = Get-ScreenshotOcr
+        if (Test-GigamoneyNotRespondingOcrText $ocr.Text) {
+            throw "Gigamoney still isn't responding after it was restarted."
+        }
+    }
+
+    $dismissedAds = Dismiss-GigamoneyAdScreenIfPresent -AdbPath $script:Adb -WorkDir $script:WorkDir
+    if ($dismissedAds -gt 0) {
+        $ocr = Get-ScreenshotOcr
+    }
 
     for ($attempt = 0; $attempt -le $MaxHomeBacks; $attempt++) {
-        $ocr = Get-ScreenshotOcr
         if (Test-HomeOcrText $ocr.Text) {
             Write-Step "Home screen detected by OCR."
             return $ocr
@@ -467,6 +490,7 @@ function Ensure-Home {
         Write-Step "Home screen not detected; pressing Back ($($attempt + 1)/$MaxHomeBacks)."
         Press-Back
         Start-Sleep -Milliseconds 850
+        $ocr = Get-ScreenshotOcr
     }
 }
 
