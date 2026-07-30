@@ -1037,19 +1037,38 @@ function Get-CashData([xml]$Xml) {
     }
 }
 
-Assert-Environment
-Write-Step 'Starting Gigamoney holdings query.'
-Ensure-Home
-$cashButtonMatch = Open-Portfolio
-$cashXml = Open-CashPage $cashButtonMatch
-$cash = Get-CashData $cashXml
-Return-ToPortfolioFromCash -SkipVerification | Out-Null
-$portfolio = Collect-PortfolioData
+function Invoke-GigamoneyHoldingsQuery {
+    Write-Step 'Starting Gigamoney holdings query.'
+    Ensure-Home
+    $cashButtonMatch = Open-Portfolio
+    $cashXml = Open-CashPage $cashButtonMatch
+    $cash = Get-CashData $cashXml
+    Return-ToPortfolioFromCash -SkipVerification | Out-Null
+    $portfolio = Collect-PortfolioData
 
-$result = [pscustomobject][ordered]@{
-    queriedAt = (Get-Date).ToString('o')
-    cash      = $cash
-    positions = @($portfolio.positions)
+    return [pscustomobject][ordered]@{
+        queriedAt = (Get-Date).ToString('o')
+        cash      = $cash
+        positions = @($portfolio.positions)
+    }
 }
 
-$result | ConvertTo-Json -Depth 10
+Assert-Environment
+for ($attempt = 1; $attempt -le 2; $attempt++) {
+    try {
+        $result = Invoke-GigamoneyHoldingsQuery
+        $result | ConvertTo-Json -Depth 10
+        break
+    } catch {
+        if ($attempt -ge 2) {
+            throw
+        }
+
+        Write-Step "Gigamoney holdings query failed on the first attempt: $($_.Exception.Message)"
+        Restart-GigamoneyApp `
+            -AdbPath $script:Adb `
+            -PackageName $script:PackageName `
+            -Reason 'Gigamoney holdings query failed on the first attempt'
+        Write-Step 'Restarted Gigamoney; retrying the holdings query from the beginning.'
+    }
+}
